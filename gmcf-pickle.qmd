@@ -1,0 +1,705 @@
+---
+title: "GMCF Pickleball Utilization, December 2025"
+format: 
+  dashboard:
+    theme: zephyr
+    orientation: columns
+---
+
+```{r}
+library(tidyverse)
+library(scales)
+library(plotly)
+library(reactable)
+library(reactablefmtr)
+
+options("lubridate.week.start" = 1)
+
+by_session <- read_rds("data/by_session.rds") |> 
+  filter(month(date_time) == 12, year(date_time) == 2025)
+
+player_dupr_id_name_lookup <- read_rds("data/player_dupr_id_name_lookup.rds")
+# player_id_dupr_lookup <- read_rds("data/player_id_dupr_lookup.rds")
+
+session_player_long <- read_rds("data/session_player_long.rds") |> 
+  left_join(player_dupr_id_name_lookup, join_by(player_id))|> 
+  filter(month(date_time) == 12, year(date_time) == 2025)
+
+theme_set(theme_minimal())
+
+summarize_session <- function(x) {
+  x |> 
+    summarize(
+      n_session_avail = n(),
+      n_session_run = sum(session_run),
+      run_rate = n_session_run / n_session_avail,
+      n_spots_avail = sum(spots),
+      n_spots_filled = sum(registered),
+      fill_rate = n_spots_filled / n_spots_avail,
+      n_spots_avail_run = sum(spots[session_run]),
+      n_spots_filled_run = sum(registered[session_run]),
+      fill_rate_run = n_spots_filled_run / n_spots_avail_run,
+      mean_dupr = weighted.mean(mean_dupr, spots, na.rm = TRUE)
+  )
+}
+
+session_summary <- by_session |> 
+  summarize_session()
+
+session_summary_level <- by_session |> 
+  group_by(level) |> 
+  summarize_session()
+
+player_level_wide <- session_player_long |> 
+  filter(!is.na(player_id)) |> 
+  count(player_id, level) |> 
+  group_by(player_id) |> 
+  mutate(total = sum(n)) |> 
+  ungroup() |> 
+  pivot_wider(names_from = level, values_from = n, values_fill = 0)
+
+by_player <- player_level_wide |> 
+  left_join(player_dupr_id_name_lookup, join_by(player_id))
+
+player_rating_range <- 
+  session_player_long |>
+  filter(!is.na(player_id)) |>
+  count(player_id, rating, reliability) |> 
+  mutate(dupr_range = case_when(
+    rating < 3 ~ "< 3.0",
+    between(rating, 3, 3.5) ~ "3.0–3.5",
+    between(rating, 3.5, 4) ~  "3.5–4.0",
+    between(rating, 4, 4.5) ~ "4.0–4.5",
+    rating > 4.5 ~ "> 4.5",
+    TRUE ~ "No rating"
+    ),
+    dupr_range = fct_relevel(
+      dupr_range, "No rating", "< 3.0", "3.0–3.5", "3.5–4.0", "4.0–4.5", "> 4.5"
+    )
+    )
+
+rating_player_summary <- player_rating_range |>
+  count(dupr_range)
+
+player_summary <- by_player |> 
+  summarize(
+    n_players = n(),
+    mean = mean(total),
+    median = median(total),
+    max = max(total),
+    mean_dupr = mean(rating, na.rm = TRUE),
+    median_dupr = median(rating, na.rm = TRUE),
+    )
+
+player_summary_by_dupr_range <- by_player |>
+  left_join(player_rating_range, join_by(player_id)) |> 
+  group_by(dupr_range) |> 
+  summarize(
+    n_players = n(),
+    mean = mean(total),
+    median = median(total),
+    max = max(total)
+    )
+```
+
+# Court Usage
+
+## Column 1 - value boxes {width=33%}
+
+```{r}
+#| content: valuebox
+#| title: "Sessions run"
+list(
+  icon = "calendar-check",
+  color = "#D6EFE1",
+  value = comma(session_summary$n_session_run)
+)
+```
+
+```{r}
+#| content: valuebox
+#| title: "Sessions available"
+list(
+  icon = "calendar-event",
+  color = "#e6f2fd",
+  value = comma(session_summary$n_session_avail)
+)
+```
+
+
+```{r}
+#| content: valuebox
+#| title: "Spots filled"
+list(
+  icon = "person-check-fill",
+  color = "#D6EFE1",
+  value = comma(session_summary$n_spots_filled)
+)
+```
+
+```{r}
+#| content: valuebox
+#| title: "Spots available"
+list(
+  icon = "ticket",
+  color = "#e6f2fd",
+  value = comma(session_summary$n_spots_avail)
+)
+```
+
+## Column 2 = plots
+
+### Run rate {.tabset}
+
+#### Run rate total
+
+```{r}
+plot_ly(
+  domain = list(x = c(0, 1), y = c(0, 1)),
+  value = session_summary$run_rate,
+  title = list(text = "Run rate"),
+  type = "indicator",
+  mode = "gauge+number",
+  number = list(valueformat = ".0%"),
+  gauge = list(
+    bar = list(thickness = 1, color = "steelblue"),
+    steps = list(list(range = list(0, 1), color = "#e5e5e5")),
+    borderwidth = 0,
+    axis = list(range = list(0, 1),tickformat = ".0%")
+    )
+  ) |> 
+  config(displayModeBar = FALSE) |> 
+  layout(
+    font = list(family = "Inter"),
+    margin = list(t = 40, r = 40, b = 10, l = 30)
+    )
+```
+
+#### By level
+
+```{r}
+p <- session_summary_level |> 
+  mutate(
+    tooltip = paste0(
+      "<b>", level, "</b><br>",
+      "Run rate: ", percent(run_rate, 1), "<br>",
+      "Sessions run: ", n_session_run, "<br>",
+      "Sessions available: ", n_session_avail, "<br>"
+      )
+    ) |> 
+  ggplot(aes(run_rate, level, text = tooltip)) +
+  geom_col(aes(x = 1, text = NULL), fill = "grey90", width = 0.8) +
+  geom_col(fill = "steelblue", width = 0.8) +
+  scale_x_continuous(expand = expansion(mult = c(0.01, NA)), labels = label_percent()) +
+  labs(
+    title = "Run rate by level",
+    x = NULL,
+    y = NULL
+  ) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.y = element_text(size = 11)
+    )
+  
+ggplotly(p, tooltip = "text") |> 
+  config(displayModeBar = FALSE) |> 
+  layout(
+    font = list(family = "Inter"),
+    margin = list(t = 40, r = 20, b = 20, l = 20),
+    xaxis = list(fixedrange = TRUE),
+    yaxis = list(fixedrange = TRUE),
+    hoverlabel = list(font = list(family = "Inter"))
+    )
+```
+
+#### Sessions available by level
+
+```{r}
+p <- session_summary_level |> 
+  mutate(
+    tooltip = paste0(
+      "<b>", level, "</b><br>",
+      "Sessions available: ", n_session_avail, "<br>"
+      )
+    ) |> 
+  ggplot(aes(n_session_avail, level, text = tooltip)) +
+  geom_col(aes(x = 1, text = NULL), fill = "grey90", width = 0.8) +
+  geom_col(fill = "steelblue", width = 0.8) +
+  scale_x_continuous(expand = expansion(mult = c(0.01, NA))) +
+  labs(
+    title = "Number of sessions available by level",
+    x = NULL,
+    y = NULL
+  ) +
+  theme(
+    axis.text.y = element_text(size = 11),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank()
+    )
+
+ggplotly(p, tooltip = "text") |> 
+  config(displayModeBar = FALSE) |> 
+  layout(
+    font = list(family = "Inter"),
+    margin = list(t = 40, r = 20, b = 20, l = 20),
+    xaxis = list(fixedrange = TRUE),
+    yaxis = list(fixedrange = TRUE),
+    hoverlabel = list(font = list(family = "Inter"))
+    )
+```
+
+
+### Fill rate {.tabset}
+
+#### Fill rate total
+
+```{r}
+plot_ly(
+  domain = list(x = c(0, 1), y = c(0, 1)),
+  value = session_summary$fill_rate,
+  title = list(text = "Fill rate"),
+  type = "indicator",
+  mode = "gauge+number",
+  number = list(valueformat = ".0%"),
+  gauge = list(
+    bar = list(thickness = 1, color = "steelblue"),
+    borderwidth = 0,
+    steps = list(list(range = list(0, 1), color = "#e5e5e5")),
+    axis = list(range = list(0, 1), tickformat = ".0%")
+    )
+  ) |> 
+  config(displayModeBar = FALSE) |> 
+  layout(
+    font = list(family = "Inter"),
+    margin = list(t = 40, r = 40, b = 10, l = 30)
+    )
+```
+
+#### By level
+
+```{r}
+p <- session_summary_level |> 
+  mutate(
+    tooltip = paste0(
+      "<b>", level, "</b><br>",
+      "Fill rate: ", percent(fill_rate, 1), "<br>",
+      "Spots filled: ", n_spots_filled, "<br>",
+      "Spots available: ", n_spots_avail, "<br>"
+      )
+    ) |>   
+  ggplot(aes(fill_rate, level, text = tooltip)) +
+  geom_col(aes(x = 1, text = NULL), fill = "grey90", width = 0.8) +
+  geom_col(fill = "steelblue", width = 0.8) +
+  scale_x_continuous(
+    expand = expansion(mult = c(0.01, NA)),
+    labels = label_percent()
+    ) +
+  labs(
+    title = "Fill rate by level",
+    x = NULL,
+    y = NULL
+  ) +
+  theme(
+    axis.text.y = element_text(size = 11),
+    panel.grid = element_blank()
+    )
+  
+ggplotly(p, tooltip = "text") |> 
+  config(displayModeBar = FALSE) |> 
+  layout(
+    font = list(family = "Inter"),
+    margin = list(t = 40, r = 20, b = 20, l = 20),
+    xaxis = list(fixedrange = TRUE),
+    yaxis = list(fixedrange = TRUE),
+    hoverlabel = list(font = list(family = "Inter"))
+    )
+```
+
+
+#### Spots available by level
+
+```{r}
+p <- session_summary_level |> 
+  mutate(
+    tooltip = paste0(
+      "<b>", level, "</b><br>",
+      "Spots available: ", n_spots_avail, "<br>"
+      )
+    ) |> 
+  ggplot(aes(n_spots_avail, level, text = tooltip)) +
+  geom_col(aes(x = 1, text = NULL), fill = "grey90", width = 0.8) +
+  geom_col(fill = "steelblue", width = 0.8) +
+  scale_x_continuous(expand = expansion(mult = c(0.01, NA))) +
+  labs(
+    title = "Number of spots available by level",
+    x = NULL,
+    y = NULL
+  ) +
+  theme(
+    axis.text.y = element_text(size = 11),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank()
+    )
+
+ggplotly(p, tooltip = "text") |> 
+  config(displayModeBar = FALSE) |> 
+  layout(
+    font = list(family = "Inter"),
+    margin = list(t = 40, r = 20, b = 20, l = 20),
+    xaxis = list(fixedrange = TRUE),
+    yaxis = list(fixedrange = TRUE),
+    hoverlabel = list(font = list(family = "Inter"))
+    )
+```
+
+
+
+<!-- ```{r} -->
+<!-- p <- by_player |>  -->
+<!--   ggplot(aes(n)) + -->
+<!--   geom_histogram(binwidth = 1, color = "white", fill = "steelblue") + -->
+<!--   scale_x_continuous(expand = expansion(mult = c(0.01, NA))) + -->
+<!--   scale_y_continuous(expand = expansion(mult = c(0.01, NA))) + -->
+<!--   labs( -->
+<!--     title = "How many sessions did each player attend in the month?", -->
+<!--     x = "Number of sessions", -->
+<!--     y = "Number of players" -->
+<!--   ) + -->
+<!--   theme_minimal() + -->
+<!--   theme( -->
+<!--     panel.grid.major.x  = element_blank(), -->
+<!--     panel.grid.minor.x = element_blank(), -->
+<!--     panel.grid.minor.y = element_blank() -->
+<!--     ) -->
+
+<!-- ggplotly(p) |>  -->
+<!--   config(displayModeBar = FALSE) |>  -->
+<!--   layout(font = list(family = "Inter")) -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- vbs <- list( -->
+<!--   value_box( -->
+<!--     title = "Unique players", -->
+<!--     value = player_summary$n_players, -->
+<!--     showcase = bs_icon("people"), -->
+<!--     theme = value_box_theme(bg = "#FBF5E1", fg = "#A37E16") -->
+<!--   ), -->
+<!--   value_box( -->
+<!--     title = "Mean sessions", -->
+<!--     value = number(player_summary$mean, accuracy = 0.1), -->
+<!--     showcase = bs_icon("bar-chart"), -->
+<!--     theme = value_box_theme(bg = "#FBF5E1", fg = "#A37E16") -->
+<!--   ), -->
+<!--   value_box( -->
+<!--     title = "Median sessions", -->
+<!--     value = player_summary$median, -->
+<!--     showcase = bs_icon("activity"), -->
+<!--     theme = value_box_theme(bg = "#FBF5E1", fg = "#A37E16") -->
+<!--   ), -->
+<!--   value_box( -->
+<!--     title = "Max sessions", -->
+<!--     value = player_summary$max, -->
+<!--     showcase = bs_icon("trophy"), -->
+<!--     theme = value_box_theme(bg = "#FBF5E1", fg = "#A37E16") -->
+<!--   )   -->
+<!-- ) -->
+
+<!-- layout_column_wrap(!!!vbs, width = 1/2) -->
+<!-- ``` -->
+
+# By Player
+
+## Column 1 - value boxes {width=33%}
+
+```{r}
+#| content: valuebox
+#| title: "Unique players"
+list(
+  icon = "people",
+  color = "#D6EFE1",
+  value = comma(player_summary$n_players)
+)
+```
+
+```{r}
+#| content: valuebox
+#| title: "Mean sessions"
+list(
+  icon = "bar-chart",
+  color = "#e6f2fd",
+  value = number(player_summary$mean, accuracy = 0.1)
+)
+```
+
+```{r}
+#| content: valuebox
+#| title: "Median sessions"
+list(
+  icon = "activity",
+  color = "#FBF5E1",
+  value = comma(player_summary$median)
+)
+```
+
+```{r}
+#| content: valuebox
+#| title: "Max sessions"
+list(
+  icon = "trophy",
+  color = "#F6CEFC",
+  value = comma(player_summary$max)
+)
+```
+
+## Column 2 - plots
+
+```{r}
+p <- by_player |> 
+  ggplot(aes(total)) +
+  geom_histogram(binwidth = 1, color = "white", fill = "steelblue") +
+  scale_x_continuous(expand = expansion(mult = c(0.01, NA))) +
+  scale_y_continuous(expand = expansion(mult = c(0.01, NA))) +
+  labs(
+    title = "How many sessions did each player attend in the month?",
+    x = "Number of sessions",
+    y = "Number of players"
+  ) +
+  theme(
+    panel.grid.major.x  = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.minor.y = element_blank()
+    )
+
+ggplotly(p) |> 
+  config(displayModeBar = FALSE) |> 
+  layout(font = list(family = "Inter"))
+```
+
+### Player DUPR range {.tabset}
+
+#### Players by DUPR range
+ 
+```{r}
+p <- rating_player_summary |> 
+  mutate(
+    tooltip = paste0(
+      "<b>", dupr_range, "</b><br>",
+      "Number of players: ", n
+      )
+    ) |>
+  ggplot(aes(n, dupr_range, text = tooltip)) +
+  geom_col(fill = "steelblue", width = 0.8) +
+  scale_x_continuous(expand = expansion(mult = c(0.01, 0.1))) +
+  labs(
+    title = "Number of players by DUPR range",
+    x = NULL,
+    y = NULL
+  ) +
+  theme(
+    axis.text.y = element_text(size = 11),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank()
+    )
+  
+ggplotly(p, tooltip = "text") |> 
+  config(displayModeBar = FALSE) |> 
+  layout(
+    font = list(family = "Inter"),
+    margin = list(t = 40, r = 20, b = 20, l = 20),
+    xaxis = list(fixedrange = TRUE),
+    yaxis = list(fixedrange = TRUE),
+    hoverlabel = list(font = list(family = "Inter"))
+    )
+```
+
+#### Avg sessions by DUPR range
+
+```{r}
+p <- player_summary_by_dupr_range |> 
+  mutate(
+    tooltip = paste0(
+      "<b>", dupr_range, "</b><br>",
+      "Average number of sessions played: ", number(mean, 0.1), "</b></br>",
+      "Number of players: ", n_players
+      )
+    ) |>
+  ggplot(aes(mean, dupr_range, text = tooltip)) +
+  geom_col(fill = "steelblue", width = 0.8) +
+  scale_x_continuous(expand = expansion(mult = c(0.01, 0.1))) +
+  labs(
+    title = "Average number of sessions played by DUPR range",
+    x = NULL,
+    y = NULL
+  ) +
+  theme(
+    axis.text.y = element_text(size = 11),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank()
+    )
+  
+ggplotly(p, tooltip = "text") |> 
+  config(displayModeBar = FALSE) |> 
+  layout(
+    font = list(family = "Inter"),
+    margin = list(t = 40, r = 20, b = 20, l = 20),
+    xaxis = list(fixedrange = TRUE),
+    yaxis = list(fixedrange = TRUE),
+    hoverlabel = list(font = list(family = "Inter"))
+    )
+```
+
+#### Avg DUPR by level
+
+```{r}
+p <- session_summary_level |> 
+  mutate(
+    tooltip = paste0(
+      "<b>", level, "</b><br>",
+      "Mean DUPR: ", number(mean_dupr, 0.01)
+      )
+    ) |>   
+  ggplot(aes(mean_dupr, level, text = tooltip)) +
+  geom_col(aes(x = 1, text = NULL), fill = "grey90", width = 0.8) +
+  geom_col(fill = "steelblue", width = 0.8) +
+  scale_x_continuous(
+    expand = expansion(mult = c(0.01, NA)),
+    labels = label_number(accuracy = 0.1)
+    ) +
+  labs(
+    title = "Average DUPR rating by session level",
+    x = NULL,
+    y = NULL
+  ) +
+  theme(
+    axis.text.y = element_text(size = 11),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank()
+    )
+
+ggplotly(p, tooltip = "text") |> 
+  config(displayModeBar = FALSE) |> 
+  layout(
+    font = list(family = "Inter"),
+    margin = list(t = 40, r = 20, b = 20, l = 20),
+    xaxis = list(fixedrange = TRUE),
+    yaxis = list(fixedrange = TRUE),
+    hoverlabel = list(font = list(family = "Inter"))
+    )
+```
+
+
+# Data Tables
+
+## Tables {.tabset}
+
+### Session detail
+
+```{r}
+to_table <- by_session |> 
+  arrange(date_time, level) |> 
+  transmute(
+    session_id,
+    level,
+    date = force_tz(date_time, tzone = "America/New_York"),
+    time = force_tz(date_time, tzone = "America/New_York"),
+    weekday,
+    weekday_sort = wday(date),
+    day_part,
+    day_part_sort = as.numeric(day_part),
+    mean_dupr,
+    registered,
+    spots,
+    fill_rate = pct_registered,
+  )
+  
+to_table |> 
+  reactable(
+    filterable = TRUE,
+    pagination = FALSE,
+    highlight = TRUE,
+    defaultSorted = "date",
+    columns = list(
+      date = colDef(format = colFormat(date = TRUE)),
+      time = colDef(format = colFormat(time = TRUE)),
+      weekday = colDef(show = FALSE),
+      weekday_sort = colDef(
+        name = "weekday",
+        cell = function(value, i) {to_table$weekday[i]}
+        ),
+      day_part = colDef(show = FALSE),
+      day_part_sort = colDef(
+        name = "day part",
+        cell = function(value, i) {to_table$day_part[i]}
+        ),
+      mean_dupr = colDef(name = "avg dupr", format = colFormat(digits = 1)),
+      fill_rate = colDef(
+        name = "fill rate",
+        format = colFormat(digits = 0, percent = TRUE)
+        # style = color_scales(to_table, opacity = 0.5)
+        )
+      )
+    )
+```
+
+### Player detail
+
+```{r}
+by_player |> 
+  arrange(desc(total)) |> 
+  select(player_name, total, rating, reliability, `2.5–3.2`, `3.0–3.7`, `3.5–4.2`, `4.0–4.7`, `4.5+`) |> 
+  reactable(
+    filterable = TRUE,
+    pagination = FALSE,
+    highlight = TRUE,
+    columns = list(
+      player_name = colDef(name = "name"),
+      total = colDef(name = "total sessions"),
+      rating = colDef(
+        name = "dupr rating",
+        format = colFormat(digits = 1)
+        ),
+      reliability = colDef(name = "dupr reliability")
+      )
+    )
+```
+
+<!-- ### Player detail -->
+
+<!-- ```{r} -->
+<!-- to_table <- session_player_long |>  -->
+<!--   filter(!is.na(player_id)) |>  -->
+<!--   arrange(player_id, date_time) |>  -->
+<!--   transmute( -->
+<!--     player_name, -->
+<!--     level, -->
+<!--     date = force_tz(date_time, tzone = "America/New_York"), -->
+<!--     time = force_tz(date_time, tzone = "America/New_York"), -->
+<!--     weekday, -->
+<!--     weekday_sort = wday(date), -->
+<!--     session_id -->
+<!--   ) -->
+
+<!-- to_table |>  -->
+<!--   reactable( -->
+<!--     filterable = TRUE, -->
+<!--     pagination = FALSE, -->
+<!--     highlight = TRUE, -->
+<!--     columns = list( -->
+<!--       date = colDef(format = colFormat(date = TRUE)), -->
+<!--       time = colDef(format = colFormat(time = TRUE)), -->
+<!--       weekday = colDef(show = FALSE), -->
+<!--       weekday_sort = colDef( -->
+<!--         name = "weekday", -->
+<!--         cell = function(value, i) {to_table$weekday[i]} -->
+<!--         )       -->
+<!--       ) -->
+<!--     ) -->
+<!-- ``` -->
+
