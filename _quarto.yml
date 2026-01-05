@@ -1,6 +1,7 @@
 project:
   title: "gmcf-pickle"
   output-dir: "_site"
+  post-render: encrypt.r
 
 
 
