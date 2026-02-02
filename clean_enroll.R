@@ -2,12 +2,29 @@ library(tidyverse)
 library(httr2)
 library(jsonlite)
 
-enroll <- read_csv("data/gmcf_1767555373_enrollments.csv", col_names = FALSE)
+enroll <- read_csv("data/gmcf_1770041442_enrollments.csv", col_names = FALSE)
 
-player_id_player_name <- enroll |> 
+player_id_player_name_semi <- enroll |> 
   select(player_id = X1, player_name = X2) |> 
   filter(player_id != "player_id") |> 
   mutate(player_id = as.numeric(player_id))
+
+# likely dupes - need to fix these!
+player_id_player_name |> 
+  group_by(player_name) |> 
+  arrange(player_name) |> 
+  filter(n() > 1)
+
+player_id_dupes_to_fix <- read_csv("data/player_id_dupes.csv")
+
+
+dupe_to_remove <- player_id_dupes_to_fix |> 
+  filter(dupe) |> 
+  pull(player_id)
+
+player_id_player_name <- player_id_player_name_semi |> 
+  filter(!player_id %in% dupe_to_remove)
+
 
 session_player_long <- as_tibble(t(enroll)) |>
   mutate(
@@ -37,7 +54,11 @@ session_player_long <- as_tibble(t(enroll)) |>
     day_part = fct_relevel(day_part, "Morning", "Afternoon", "Evening")
     ) |>
   select(-name) |> 
-  distinct()
+  distinct() |> 
+  left_join(player_id_dupes_to_fix, join_by(player_id)) |> 
+  mutate(player_id = coalesce(player_id_corrected, player_id)) |> 
+  select(-player_name, -player_id_corrected, -dupe)
+
 
 session_id_played <- session_player_long |> 
   filter(!is.na(player_id)) |> 
@@ -46,7 +67,6 @@ session_id_played <- session_player_long |>
 
 player_id_dupr <- read_csv("data/player_id_name_dupr.csv")
 
-
 player_id_to_lookup_dupr_id <- player_id_player_name |> 
   filter(player_id %in% session_id_played) |> 
   anti_join(filter(player_id_dupr, !is.na(dupr_id)), join_by("player_id"))
@@ -54,7 +74,7 @@ player_id_to_lookup_dupr_id <- player_id_player_name |>
 # write out player ids that have no dupr to look up manually
 write_csv(player_id_to_lookup_dupr_id, paste0("data/player_id_to_lookup_dupr_id_", today(), ".csv"))
 
-new_dupr_id_found <- read_csv("data/player_id_to_lookup_dupr_id 2026-01-04 .csv") |> 
+new_dupr_id_found <- read_csv("data/player_id_to_lookup_dupr_id_2026-02-02.csv") |> 
   filter(!is.na(dupr_id)) |> 
   select(player_id, dupr_id)
 
@@ -113,7 +133,6 @@ dupr_return_df <- dupr_return |>
 
 player_dupr_id_name_lookup <- player_id_player_name |> 
   left_join(dupr_return_df, join_by("player_id"))
-
 
 by_session <- session_player_long |> 
   left_join(player_dupr_id_name_lookup, join_by("player_id")) |> 

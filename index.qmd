@@ -1,5 +1,5 @@
 ---
-title: "GMCF Pickleball Utilization, December 2025"
+title: "GMCF Pickleball Utilization, January 2026"
 format: 
   dashboard:
     theme: zephyr
@@ -12,18 +12,22 @@ library(scales)
 library(plotly)
 library(reactable)
 library(reactablefmtr)
+library(tsibble)
 
 options("lubridate.week.start" = 1)
 
 by_session <- read_rds("data/by_session.rds") |> 
-  filter(month(date_time) == 12, year(date_time) == 2025)
+  filter(month(date_time) == 1, year(date_time) == 2026)
+
+by_session_trend <- read_rds("data/by_session.rds") |> 
+  filter(between(as.Date(date_time), as.Date("2025-10-01"), as.Date("2026-01-31")))
 
 player_dupr_id_name_lookup <- read_rds("data/player_dupr_id_name_lookup.rds")
 # player_id_dupr_lookup <- read_rds("data/player_id_dupr_lookup.rds")
 
 session_player_long <- read_rds("data/session_player_long.rds") |> 
   left_join(player_dupr_id_name_lookup, join_by(player_id))|> 
-  filter(month(date_time) == 12, year(date_time) == 2025)
+  filter(month(date_time) == 1, year(date_time) == 2026)
 
 theme_set(theme_minimal())
 
@@ -42,6 +46,18 @@ summarize_session <- function(x) {
       mean_dupr = weighted.mean(mean_dupr, spots, na.rm = TRUE)
   )
 }
+
+session_summary_trend <- by_session_trend |> 
+  group_by(ym = yearmonth(date_time)) |> 
+  summarize_session()
+
+session_summary_level_trend <- by_session_trend |> 
+  group_by(ym = yearmonth(date_time), level) |> 
+  summarize_session()
+
+session_summary_level <- by_session |> 
+  group_by(level) |> 
+  summarize_session()
 
 session_summary <- by_session |> 
   summarize_session()
@@ -66,15 +82,15 @@ player_rating_range <-
   filter(!is.na(player_id)) |>
   count(player_id, rating, reliability) |> 
   mutate(dupr_range = case_when(
-    rating < 3 ~ "< 3.0",
-    between(rating, 3, 3.5) ~ "3.0–3.5",
-    between(rating, 3.5, 4) ~  "3.5–4.0",
-    between(rating, 4, 4.5) ~ "4.0–4.5",
-    rating > 4.5 ~ "> 4.5",
+    rating < 2.8 ~ "< 2.8",
+    between(rating, 2.8, 3.3) ~ "2.8–3.3",
+    between(rating, 3.3, 3.8) ~  "3.3–3.8",
+    between(rating, 3.8, 4.3) ~ "3.8–4.3",
+    rating > 4.3 ~ "> 4.3",
     TRUE ~ "No rating"
     ),
     dupr_range = fct_relevel(
-      dupr_range, "No rating", "< 3.0", "3.0–3.5", "3.5–4.0", "4.0–4.5", "> 4.5"
+      dupr_range, "No rating", "< 2.8", "2.8–3.3", "3.3–3.8", "3.8–4.3", "> 4.3"
     )
     )
 
@@ -100,6 +116,14 @@ player_summary_by_dupr_range <- by_player |>
     median = median(total),
     max = max(total)
     )
+
+level_colors <- c(
+  `2.3–3.0` = "#fdd841",
+  `2.8–3.5` = "#ff8214",
+  `3.3–4.0` = "#1778a3",
+  `3.8–4.5` = "#00AAA9",
+  `4.3+`    = "#78B728"
+)
 ```
 
 # Court Usage
@@ -355,6 +379,169 @@ ggplotly(p, tooltip = "text") |>
 ```
 
 
+# Court Usage Trends
+
+## Column 1 {width=50%}
+
+```{r}
+p <- session_summary_trend |> 
+  mutate(
+    tooltip = paste0(
+      "<b>", ym, "</b><br>",
+      "Run rate: ", percent(run_rate, 1), "<br>",
+      "Sessions run: ", n_session_run, "<br>",
+      "Sessions available: ", n_session_avail, "<br>"
+      )
+  ) |> 
+  select(ym, `Sessions available` = n_session_avail, tooltip, `Sessions run` = n_session_run, run_rate) |> 
+  pivot_longer(-c(ym, run_rate, tooltip)) |> 
+  ggplot(aes(ym, value, fill = name, text = tooltip)) +
+  geom_col(position = position_dodge()) +
+  scale_y_continuous(expand = expansion(mult = c(0.01, NA))) +
+  scale_fill_manual(values = c("steelblue", "coral")) +
+  labs(
+    title = "Sessions available and run by month",
+    x = NULL,
+    y = NULL,
+    fill = NULL
+  ) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text = element_text(size = 11)
+    )
+  
+ggplotly(p, tooltip = "text") |> 
+  config(displayModeBar = FALSE) |> 
+  layout(
+    font = list(family = "Inter"),
+    margin = list(t = 40, r = 20, b = 20, l = 20),
+    xaxis = list(fixedrange = TRUE),
+    yaxis = list(fixedrange = TRUE),
+    hoverlabel = list(font = list(family = "Inter")),
+    legend = list(orientation = "h", xanchor = "right", yanchor = "bottom", x = 1, y = 1.02)
+    
+    )
+```
+
+
+```{r}
+p <- session_summary_trend |> 
+  mutate(
+    tooltip = paste0(
+      "<b>", ym, "</b><br>",
+      "Fill rate: ", percent(fill_rate, 1), "<br>",
+      "Spots filled: ", comma(n_spots_avail), "<br>",
+      "Spots available: ", comma(n_spots_filled), "<br>"
+      )
+  ) |> 
+  select(ym, `Spots available` = n_spots_avail, tooltip, `Spots filled` = n_spots_filled, fill_rate) |> 
+  pivot_longer(-c(ym, fill_rate, tooltip)) |> 
+  ggplot(aes(ym, value, fill = name, text = tooltip)) +
+  geom_col(position = position_dodge()) +
+  scale_y_continuous(labels = label_comma(), expand = expansion(mult = c(0.01, NA))) +
+  scale_fill_manual(values = c("steelblue", "coral")) +
+  labs(
+    title = "Spots available and filled by month",
+    x = NULL,
+    y = NULL,
+    fill = NULL
+  ) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text = element_text(size = 11)
+    )
+  
+ggplotly(p, tooltip = "text") |> 
+  config(displayModeBar = FALSE) |> 
+  layout(
+    font = list(family = "Inter"),
+    margin = list(t = 40, r = 20, b = 20, l = 20),
+    xaxis = list(fixedrange = TRUE),
+    yaxis = list(fixedrange = TRUE),
+    hoverlabel = list(font = list(family = "Inter")),
+    legend = list(orientation = "h", xanchor = "right", yanchor = "bottom", x = 1, y = 1.02)
+    
+    )
+```
+
+## Column 2 {width=50%}
+
+```{r}
+p <- session_summary_level_trend |> 
+  mutate(
+    tooltip = paste0(
+      "<b>", level, " — ", ym, "</b><br>",
+      "Run rate: ", percent(run_rate, 1), "<br>",
+      "Sessions run: ", n_session_run, "<br>",
+      "Sessions available: ", n_session_avail, "<br>"
+      )
+  ) |> 
+  ggplot(aes(ym, run_rate, color = level, text = tooltip, group = level)) +
+  geom_line(lwd = 1) +
+  geom_point(size = 2.5) +
+  scale_color_manual(values = level_colors) +
+  scale_y_continuous(labels = label_percent(), limits = c(0, 1)) +
+  labs(
+    title = "Run rate by level",
+    x = NULL,
+    y = NULL,
+    color = NULL
+  ) +
+  theme(
+    axis.text = element_text(size = 11)
+    )
+
+ggplotly(p, tooltip = "text") |> 
+  config(displayModeBar = FALSE) |> 
+  layout(
+    font = list(family = "Inter"),
+    margin = list(t = 40, r = 20, b = 20, l = 20),
+    xaxis = list(fixedrange = TRUE),
+    yaxis = list(fixedrange = TRUE),
+    hoverlabel = list(font = list(family = "Inter")),
+    legend = list(orientation = "h", xanchor = "right", yanchor = "bottom", x = 1, y = 1.02)
+    )
+```
+
+
+```{r}
+p <- session_summary_level_trend |> 
+  mutate(
+    tooltip = paste0(
+      "<b>", level, " — ", ym, "</b><br>",
+      "Fill rate: ", percent(fill_rate, 1), "<br>",
+      "Spots filled: ", n_spots_avail, "<br>",
+      "Spots available: ", n_spots_filled, "<br>"
+      )
+  ) |> 
+  ggplot(aes(ym, fill_rate, color = level, text = tooltip, group = level)) +
+  geom_line(lwd = 1) +
+  geom_point(size = 2.5) +
+  scale_color_manual(values = level_colors) +
+  scale_y_continuous(labels = label_percent(), limits = c(0, 1)) +
+  labs(
+    title = "Fill rate by level",
+    x = NULL,
+    y = NULL,
+    color = NULL
+  ) +
+  theme(
+    axis.text = element_text(size = 11)
+    )
+
+ggplotly(p, tooltip = "text") |> 
+  config(displayModeBar = FALSE) |> 
+  layout(
+    font = list(family = "Inter"),
+    margin = list(t = 40, r = 20, b = 20, l = 20),
+    xaxis = list(fixedrange = TRUE),
+    yaxis = list(fixedrange = TRUE),
+    hoverlabel = list(font = list(family = "Inter")),
+    legend = list(orientation = "h", xanchor = "right", yanchor = "bottom", x = 1, y = 1.02)
+    )
+```
 
 <!-- ```{r} -->
 <!-- p <- by_player |>  -->
@@ -650,10 +837,39 @@ to_table |>
 
 ### Player detail
 
+
+```{r}
+by_player_play_up_down <- by_player |>
+  pivot_longer(-c(player_id, player_name, dupr_id, rating),
+               names_to = "level", values_to = "n") |> 
+  filter(!level %in% c("total", "reliability"), n > 0) |> 
+  arrange(player_id) |> 
+  mutate(
+    lower_lim = as.numeric(str_sub(level, 1, 3)),
+    upper_lim = as.numeric(str_sub(level, 5, 7)),
+    upper_lim = if_else(is.na(upper_lim), Inf, upper_lim),
+    played_up = rating < lower_lim,
+    played_down = rating > upper_lim,
+    played_at_level = between(rating, lower_lim, upper_lim)
+    ) |>
+  select(player_id, rating, n, played_up, played_down, played_at_level) |> 
+  pivot_longer(-c(player_id, rating, n)) |> 
+  filter(value) |>
+  group_by(player_id, name) |>
+  summarize(n = sum(n)) |> 
+  group_by(player_id) |> 
+  mutate(pct = n / sum(n)) |> 
+  ungroup() |> 
+  select(-n) |> 
+  pivot_wider(names_from = name, values_from = pct, values_fill = 0)
+```
+
+
 ```{r}
 by_player |> 
+  left_join(by_player_play_up_down, join_by(player_id)) |> 
   arrange(desc(total)) |> 
-  select(player_name, total, rating, reliability, `2.5–3.2`, `3.0–3.7`, `3.5–4.2`, `4.0–4.7`, `4.5+`) |> 
+  select(player_name, total, rating, reliability, `2.3–3.0`, `2.8–3.5`, `3.3–4.0`, `3.8–4.5`, `4.3+`, played_at_level, played_up, played_down) |> 
   reactable(
     filterable = TRUE,
     pagination = FALSE,
@@ -665,7 +881,11 @@ by_player |>
         name = "dupr rating",
         format = colFormat(digits = 1)
         ),
-      reliability = colDef(name = "dupr reliability")
+      reliability = colDef(name = "dupr reliability"),
+      played_at_level = colDef(name = "% At level", format = colFormat(digits = 0, percent = TRUE)),
+      played_up = colDef(name = "% Up", format = colFormat(digits = 0, percent = TRUE)),
+      played_down = colDef(name = "% Down", format = colFormat(digits = 0, percent = TRUE))
+
       )
     )
 ```
